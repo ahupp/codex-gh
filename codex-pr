@@ -3,7 +3,7 @@
 Fork a GitHub repo, clone it, optionally create a new branch, then start Codex.
 
 Usage:
-  uv run fork_and_codex.py <repo|url> [new-branch]
+  codex-pr <repo|url> [new-branch]
 """
 from __future__ import annotations
 
