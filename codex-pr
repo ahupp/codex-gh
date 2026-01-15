@@ -1,0 +1,118 @@
+#!/usr/bin/env -S uv run --script
+"""
+Fork a GitHub repo, clone it, optionally create a new branch, then start Codex.
+
+Usage:
+  uv run fork_and_codex.py <repo|url> [new-branch]
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+
+def _run(cmd: list[str], cwd: Path | None = None, capture: bool = False) -> subprocess.CompletedProcess[str]:
+    if capture:
+        return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    return subprocess.run(cmd, cwd=cwd, text=True)
+
+
+def _repo_name(repo_arg: str) -> str:
+    if "://" in repo_arg:
+        parsed = urlparse(repo_arg)
+        path = parsed.path.strip("/")
+    elif repo_arg.startswith("git@") and ":" in repo_arg:
+        path = repo_arg.split(":", 1)[1].strip("/")
+    else:
+        path = repo_arg.strip("/")
+    name = path.split("/")[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    return name
+
+
+def _clone_path_from_output(output: str) -> Path | None:
+    match = re.search(r"Cloned to (.+)$", output, re.MULTILINE)
+    if not match:
+        return None
+    return Path(match.group(1).strip()).expanduser()
+
+
+def _default_branch(repo_dir: Path) -> str:
+    result = _run(
+        ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        cwd=repo_dir,
+        capture=True,
+    )
+    if result.returncode == 0:
+        ref = result.stdout.strip()
+        if "/" in ref:
+            return ref.split("/", 1)[1]
+    result = _run(["git", "remote", "show", "origin"], cwd=repo_dir, capture=True)
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("HEAD branch:"):
+                return line.split(":", 1)[1].strip()
+    return "main"
+
+
+def _ensure_new_branch(repo_dir: Path, branch: str) -> None:
+    exists = _run(
+        ["git", "rev-parse", "--verify", f"refs/heads/{branch}"],
+        cwd=repo_dir,
+        capture=True,
+    )
+    if exists.returncode == 0:
+        raise RuntimeError(f"Branch already exists: {branch}")
+    base = _default_branch(repo_dir)
+    check = _run(["git", "checkout", base], cwd=repo_dir)
+    if check.returncode != 0:
+        raise RuntimeError(f"Failed to checkout base branch: {base}")
+    create = _run(["git", "checkout", "-b", branch], cwd=repo_dir)
+    if create.returncode != 0:
+        raise RuntimeError(f"Failed to create branch: {branch}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Fork a GitHub repo, clone it, and start Codex in the checkout."
+    )
+    parser.add_argument("repo", help="GitHub repo URL or org/repo shorthand")
+    parser.add_argument("branch", nargs="?", help="Optional new branch name from default branch")
+    args = parser.parse_args()
+
+    repo_name = _repo_name(args.repo)
+    result = _run(
+        ["gh", "repo", "fork", args.repo, "--default-branch-only", "--clone"],
+        capture=True,
+    )
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+    if result.returncode != 0:
+        return result.returncode
+
+    repo_dir = _clone_path_from_output(result.stdout) or Path.cwd() / repo_name
+    if not repo_dir.exists():
+        sys.stderr.write(f"Could not locate cloned repo at {repo_dir}\n")
+        return 1
+
+    if args.branch:
+        try:
+            _ensure_new_branch(repo_dir, args.branch)
+        except RuntimeError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 1
+
+    codex = _run(["codex"], cwd=repo_dir)
+    return codex.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
