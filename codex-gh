@@ -3,7 +3,7 @@
 Fork a GitHub repo, clone it, optionally create a new branch, then start Codex.
 
 Usage:
-  codex-pr <repo|url> [new-branch]
+  codex-gh <repo|url> [new-branch]
 """
 from __future__ import annotations
 
@@ -33,6 +33,25 @@ def _repo_name(repo_arg: str) -> str:
     if name.endswith(".git"):
         name = name[:-4]
     return name
+
+
+def _repo_owner(repo_arg: str) -> str | None:
+    result = _run(
+        ["gh", "repo", "view", repo_arg, "--json", "owner", "--jq", ".owner.login"],
+        capture=True,
+    )
+    if result.returncode != 0:
+        return None
+    owner = result.stdout.strip()
+    return owner or None
+
+
+def _current_user_login() -> str | None:
+    result = _run(["gh", "api", "user", "--jq", ".login"], capture=True)
+    if result.returncode != 0:
+        return None
+    login = result.stdout.strip()
+    return login or None
 
 
 def _clone_path_from_output(output: str) -> Path | None:
@@ -87,10 +106,15 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_name = _repo_name(args.repo)
-    result = _run(
-        ["gh", "repo", "fork", args.repo, "--default-branch-only", "--clone"],
-        capture=True,
-    )
+    owner = _repo_owner(args.repo)
+    login = _current_user_login()
+    if owner and login and owner == login:
+        result = _run(["gh", "repo", "clone", args.repo], capture=True)
+    else:
+        result = _run(
+            ["gh", "repo", "fork", args.repo, "--default-branch-only", "--clone"],
+            capture=True,
+        )
     if result.stdout:
         sys.stdout.write(result.stdout)
     if result.stderr:
